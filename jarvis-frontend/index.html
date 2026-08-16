@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J.A.R.V.I.S. Mainframe HUD</title>
+    <style>
+        :root {
+            --neon-blue: #00f3ff;
+            --dark-bg: #030a14;
+            --hud-glass: rgba(0, 243, 255, 0.05);
+            --border-glow: rgba(0, 243, 255, 0.3);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--dark-bg);
+            color: var(--neon-blue);
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            background-image: radial-gradient(circle at center, #051933 0%, var(--dark-bg) 100%);
+        }
+
+        header {
+            text-align: center;
+            padding: 15px;
+            border-bottom: 1px solid var(--border-glow);
+            font-size: 1.2rem;
+            letter-spacing: 3px;
+            text-shadow: 0 0 10px var(--neon-blue);
+            background: rgba(0, 0, 0, 0.4);
+        }
+
+        .hud-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            max-width: 800px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+            box-sizing: border-box;
+            position: relative;
+        }
+
+        .chat-stream {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding-right: 10px;
+            margin-bottom: 20px;
+        }
+
+        .chat-stream::-webkit-scrollbar {
+            width: 5px;
+        }
+        .chat-stream::-webkit-scrollbar-thumb {
+            background: var(--neon-blue);
+            box-shadow: 0 0 5px var(--neon-blue);
+        }
+
+        .message {
+            padding: 12px 18px;
+            border-radius: 4px;
+            max-width: 80%;
+            line-height: 1.4;
+            font-size: 0.95rem;
+            position: relative;
+            backdrop-filter: blur(5px);
+        }
+
+        .message.user {
+            background: rgba(0, 243, 255, 0.1);
+            border: 1px solid var(--border-glow);
+            align-self: flex-end;
+            color: #ffffff;
+            box-shadow: inset 0 0 10px rgba(0, 243, 255, 0.1);
+        }
+
+        .message.assistant {
+            background: var(--hud-glass);
+            border-left: 3px solid var(--neon-blue);
+            align-self: flex-start;
+            color: var(--neon-blue);
+            box-shadow: 0 0 15px rgba(0, 243, 255, 0.05);
+        }
+
+        .input-console {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: rgba(0, 10, 20, 0.8);
+            padding: 15px;
+            border: 1px solid var(--border-glow);
+            border-radius: 6px;
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.1);
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #ffffff;
+            font-family: inherit;
+            font-size: 1rem;
+            outline: none;
+        }
+
+        input[type="text"]::placeholder {
+            color: rgba(0, 243, 255, 0.4);
+        }
+
+        button {
+            background: transparent;
+            border: 1px solid var(--neon-blue);
+            color: var(--neon-blue);
+            padding: 8px 16px;
+            font-family: inherit;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+            text-shadow: 0 0 5px var(--neon-blue);
+            box-shadow: 0 0 8px rgba(0, 243, 255, 0.2);
+        }
+
+        button:hover {
+            background: var(--neon-blue);
+            color: var(--dark-bg);
+            box-shadow: 0 0 15px var(--neon-blue);
+        }
+
+        #micBtn {
+            padding: 8px 12px;
+            font-size: 1.1rem;
+        }
+
+        #micBtn.listening {
+            background: #ff0055;
+            border-color: #ff0055;
+            color: #ffffff;
+            box-shadow: 0 0 15px #ff0055;
+            animation: pulse-mic 1s infinite alternate;
+        }
+
+        @keyframes pulse-mic {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.05); }
+        }
+
+        .waveform {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            height: 15px;
+            margin-top: 8px;
+        }
+
+        .bar {
+            width: 3px;
+            height: 100%;
+            background: var(--neon-blue);
+            animation: pulse 1s infinite alternate;
+        }
+
+        .bar:nth-child(2) { animation-delay: 0.2s; }
+        .bar:nth-child(3) { animation-delay: 0.4s; }
+        .bar:nth-child(4) { animation-delay: 0.6s; }
+
+        @keyframes pulse {
+            0% { height: 20%; opacity: 0.3; }
+            100% { height: 100%; opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>J.A.R.V.I.S. // MAINFRAME HUD v3.6</header>
+
+    <div class="hud-container">
+        <div id="chatStream" class="chat-stream">
+            <div class="message assistant">
+                Mainframe online. Systems initialized and standing by, Sir.
+            </div>
+        </div>
+
+        <div class="input-console">
+            <input type="text" id="messageInput" placeholder="Enter command or query..." autofocus>
+            <button id="micBtn" onclick="toggleSpeechRecognition()" title="Voice Input">🎙️</button>
+            <button id="sendBtn" onclick="sendMessage()">TRANSMIT</button>
+        </div>
+    </div>
+
+    <audio id="audioPlayer" style="display:none;"></audio>
+
+    <script>
+        const chatStream = document.getElementById('chatStream');
+        const messageInput = document.getElementById('messageInput');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const micBtn = document.getElementById('micBtn');
+
+        messageInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Speech Recognition Setup
+        let recognition = null;
+        if ('webkitSpeechRecognition' in window || 'speechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                micBtn.classList.add('listening');
+                messageInput.placeholder = "Listening for command, Sir...";
+            };
+
+            recognition.onresult = (event) => {
+                const speechToText = event.results[0][0].transcript;
+                messageInput.value = speechToText;
+                sendMessage();
+            };
+
+            recognition.onerror = () => {
+                micBtn.classList.remove('listening');
+                messageInput.placeholder = "Enter command or query...";
+            };
+
+            recognition.onend = () => {
+                micBtn.classList.remove('listening');
+                messageInput.placeholder = "Enter command or query...";
+            };
+        }
+
+        function toggleSpeechRecognition() {
+            if (!recognition) {
+                alert("Speech recognition is not supported in this browser, Sir.");
+                return;
+            }
+            try {
+                recognition.start();
+            } catch (e) {
+                recognition.stop();
+            }
+        }
+
+        async function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+
+            appendMessage(text, 'user');
+            messageInput.value = '';
+            chatStream.scrollTop = chatStream.scrollHeight;
+
+            try {
+                const response = await fetch('http://localhost:5000/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+
+                const data = await response.json();
+                appendMessage(data.reply, 'assistant', true);
+
+                if (data.audio) {
+                    audioPlayer.src = data.audio;
+                    audioPlayer.play().catch(e => console.log("Audio autoplay restricted"));
+                }
+
+            } catch (err) {
+                appendMessage("Telemetry link interrupted. Server unresponsive, Sir.", 'assistant');
+            }
+
+            chatStream.scrollTop = chatStream.scrollHeight;
+        }
+
+        function appendMessage(text, sender, includeWaveform = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${sender}`;
+            msgDiv.textContent = text;
+
+            if (includeWaveform && sender === 'assistant') {
+                const waveDiv = document.createElement('div');
+                waveDiv.className = 'waveform';
+                waveDiv.innerHTML = '<div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>';
+                msgDiv.appendChild(waveDiv);
+            }
+
+            chatStream.appendChild(msgDiv);
+        }
+    </script>
+</body>
+</html>

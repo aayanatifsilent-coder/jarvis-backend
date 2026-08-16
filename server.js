@@ -13,13 +13,14 @@ app.use(express.json());
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Initialize SQLite Memory Database
+// ==========================================
+// MEMORY DATABASE
+// ==========================================
 const db = new sqlite3.Database('./jarvis_memory.db', (err) => {
     if (err) console.error('Database connection error:', err.message);
     else console.log('Stark mainframe memory core initialized (SQLite).');
 });
 
-// Create table for permanent conversation history
 db.run(`CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT,
@@ -27,24 +28,73 @@ db.run(`CREATE TABLE IF NOT EXISTS memory (
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
 
-// Global state tracking
+// How many past messages JARVIS pulls into context (~20 exchanges).
+const MEMORY_WINDOW = 40;
+
 let isLockedDown = false;
 
-// Get visitor/server location automatically via IP
+// ==========================================
+// GOOGLE OAUTH2 CLIENT (Gmail + Calendar)
+// ==========================================
+const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    'urn:ietf:wg:oauth:2.0:oob'
+);
+
+if (process.env.GOOGLE_REFRESH_TOKEN) {
+    oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+}
+
+const googleAuthReady = () =>
+    !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN);
+
+// ==========================================
+// LOCATION (returns coords too, for weather)
+// ==========================================
 async function getUserLocation() {
     try {
         const res = await fetch('http://ip-api.com/json/');
         const data = await res.json();
         if (data && data.status === 'success') {
-            return `${data.city}, ${data.country}`;
+            return { name: `${data.city}, ${data.country}`, lat: data.lat, lon: data.lon };
         }
     } catch (err) {
         console.warn("Could not fetch IP location, falling back...");
     }
-    return "Unknown Location";
+    return { name: "Karachi, Pakistan", lat: 24.86, lon: 67.0 }; // fallback
 }
 
-// Free DuckDuckGo search helper
+// ==========================================
+// LIVE WEATHER (Open-Meteo — free, no API key)
+// ==========================================
+async function getWeather(lat, lon, locationName) {
+    try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m&temperature_unit=celsius`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        const code = data.current.weather_code;
+        const temp = Math.round(data.current.temperature_2m);
+        const wind = Math.round(data.current.wind_speed_10m);
+
+        const weatherDescriptions = {
+            0: "clear skies", 1: "mostly clear", 2: "partly cloudy", 3: "overcast",
+            45: "foggy", 48: "foggy", 51: "light drizzle", 61: "light rain",
+            63: "moderate rain", 65: "heavy rain", 80: "rain showers",
+            95: "thunderstorms"
+        };
+        const description = weatherDescriptions[code] || "unclear conditions";
+
+        return `${temp}°C and ${description} in ${locationName}, wind at ${wind} km/h`;
+    } catch (err) {
+        return null;
+    }
+}
+
+// ==========================================
+// LIVE WEB SEARCH (news/scores/general "what is" — not weather)
+// ==========================================
 async function searchWeb(query) {
     try {
         const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
@@ -62,14 +112,13 @@ async function searchWeb(query) {
     }
 }
 
-// Helper: Fetch Google Calendar schedule for today
+// ==========================================
+// GOOGLE CALENDAR (today's schedule)
+// ==========================================
 async function getTodaySchedule() {
+    if (!googleAuthReady()) return "Calendar link not configured yet, Sir.";
     try {
-        const auth = new google.auth.GoogleAuth({
-            keyFile: './credentials.json',
-            scopes: ['https://www.googleapis.com/auth/calendar.readonly']
-        });
-        const calendar = google.calendar({ version: 'v3', auth });
+        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
         const now = new Date();
         const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -89,7 +138,9 @@ async function getTodaySchedule() {
         }
 
         const eventList = events.map(event => {
-            const time = event.start.dateTime ? new Date(event.start.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'All day';
+            const time = event.start.dateTime
+                ? new Date(event.start.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : 'All day';
             return `${event.summary} at ${time}`;
         }).join(', ');
 
@@ -100,19 +151,30 @@ async function getTodaySchedule() {
     }
 }
 
-// Helper: Fetch recent unread Gmail messages
-async function getRecentUnreadEmails() {
+// ==========================================
+// GMAIL (recent unread, Primary tab only, junk filtered)
+// ==========================================
+async function getConnectedEmailAddress() {
+    if (!googleAuthReady()) return null;
     try {
-        const auth = new google.auth.GoogleAuth({
-            keyFile: './credentials.json',
-            scopes: ['https://www.googleapis.com/auth/gmail.readonly']
-        });
-        const gmail = google.gmail({ version: 'v1', auth });
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        const profile = await gmail.users.getProfile({ userId: 'me' });
+        return profile.data.emailAddress;
+    } catch (error) {
+        console.error("Profile fetch error:", error.message);
+        return null;
+    }
+}
+
+async function getRecentUnreadEmails(limit = 15) {
+    if (!googleAuthReady()) return "Gmail link not configured yet, Sir.";
+    try {
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
         const res = await gmail.users.messages.list({
             userId: 'me',
-            q: 'is:unread',
-            maxResults: 3
+            q: 'is:unread category:primary -from:render.com -from:scribd.com -from:formula1.com -from:duolingo.com -from:simscale.com -from:accounts.google.com -from:no-reply -subject:"security alert" -subject:"account was recovered"',
+            maxResults: 15
         });
 
         const messages = res.data.messages;
@@ -120,15 +182,31 @@ async function getRecentUnreadEmails() {
             return "No unread emails in your inbox.";
         }
 
-        let count = messages.length;
-        return `You have ${count} unread email updates awaiting review.`;
+        const details = await Promise.all(
+            messages.slice(0, limit).map(async (m) => {
+                const msg = await gmail.users.messages.get({
+                    userId: 'me',
+                    id: m.id,
+                    format: 'metadata',
+                    metadataHeaders: ['Subject', 'From']
+                });
+                const headers = msg.data.payload.headers;
+                const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
+                const from = headers.find(h => h.name === 'From')?.value.split('<')[0].trim() || 'Unknown sender';
+                return `"${subject}" from ${from}`;
+            })
+        );
+
+        return `You have ${messages.length} unread emails. Top ones: ${details.join('; ')}.`;
     } catch (error) {
         console.error("Gmail fetch error:", error.message);
         return "Gmail link offline.";
     }
 }
 
-// Helper to generate ElevenLabs speech for any reply text
+// ==========================================
+// ELEVENLABS TTS
+// ==========================================
 async function generateSpeech(replyText) {
     const voiceId = process.env.VOICE_ID;
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -153,14 +231,22 @@ async function generateSpeech(replyText) {
             })
         });
 
-        if (!elevenRes.ok) return null;
+        if (!elevenRes.ok) {
+            const errorText = await elevenRes.text();
+            console.error("ElevenLabs error:", elevenRes.status, errorText);
+            return null;
+        }
         const arrayBuffer = await elevenRes.arrayBuffer();
         return `data:audio/mp3;base64,${Buffer.from(arrayBuffer).toString('base64')}`;
     } catch (e) {
+        console.error("ElevenLabs fetch exception:", e.message);
         return null;
     }
 }
 
+// ==========================================
+// MAIN CHAT ENDPOINT
+// ==========================================
 app.post('/api/chat', async (req, res) => {
     try {
         const { message } = req.body;
@@ -180,7 +266,7 @@ app.post('/api/chat', async (req, res) => {
         // ==========================================
         if (isLockedDown && !lowerMsg.includes('lift lockdown') && !lowerMsg.includes('unlock')) {
             replyText = "System under Code 404 Lockdown. Access denied, Sir.";
-        } 
+        }
         else if (lowerMsg.includes('code 404') || lowerMsg.includes('lockdown procedure')) {
             isLockedDown = true;
             replyText = "Lockdown Procedure Initiated. Shuts down JARVIS temporarily, Sir.";
@@ -199,14 +285,11 @@ app.post('/api/chat', async (req, res) => {
             replyText = `Running Diagnostics. System self checks operational. Heap memory running at ${heapMB} megabytes. All mainframe linkages stable, Sir.`;
         }
         else if (lowerMsg.includes('briefing 101') || lowerMsg.includes('morning briefing')) {
-            let weatherInfo = "Weather data link nominal.";
-            try {
-                const weatherRes = await searchWeb("weather today");
-                if (weatherRes) weatherInfo = weatherRes.slice(0, 80);
-            } catch (e) {}
+            const location = await getUserLocation();
+            const weatherInfo = await getWeather(location.lat, location.lon, location.name) || "Weather data link nominal.";
 
             const scheduleInfo = await getTodaySchedule();
-            const emailInfo = await getRecentUnreadEmails();
+            const emailInfo = await getRecentUnreadEmails(5);
 
             replyText = `Good morning, Sir. Briefing 101 engaged. Current status: ${weatherInfo}. ${scheduleInfo} ${emailInfo} All systems optimal, Sir.`;
         }
@@ -220,28 +303,43 @@ app.post('/api/chat', async (req, res) => {
             // ==========================================
             db.run(`INSERT INTO memory (role, content) VALUES (?, ?)`, ['user', message]);
 
-            db.all(`SELECT role, content FROM memory ORDER BY id DESC LIMIT 10`, async (err, rows) => {
+            db.all(`SELECT role, content FROM memory ORDER BY id DESC LIMIT ?`, [MEMORY_WINDOW], async (err, rows) => {
                 if (err) return res.status(500).json({ error: 'Database read error' });
 
                 const history = rows.reverse().map(row => ({ role: row.role, content: row.content }));
-                const userLocation = await getUserLocation();
 
-                const searchKeywords = ['weather', 'news', 'score', 'today', 'price', 'latest', 'who won', 'what is', 'formula 1', 'f1'];
-                let searchContext = '';
+                const searchKeywords = ['news', 'score', 'today', 'price', 'latest', 'who won', 'what is', 'formula 1', 'f1'];
+                const calendarKeywords = ['calendar', 'schedule', 'meeting', 'agenda', 'appointment', 'what do i have'];
+                const emailKeywords = ['email', 'inbox', 'gmail', 'unread', 'mail'];
 
-                if (searchKeywords.some(keyword => lowerMsg.includes(keyword))) {
-                    const searchQuery = lowerMsg.includes('weather') ? `${message} in ${userLocation}` : message;
-                    const snippetData = await searchWeb(searchQuery);
-                    if (snippetData) searchContext = `\n[Live Search Context: ${snippetData}]`;
+                let liveContext = '';
+
+                if (lowerMsg.includes('weather')) {
+                    const location = await getUserLocation();
+                    const weatherInfo = await getWeather(location.lat, location.lon, location.name);
+                    if (weatherInfo) liveContext += `\n[Live Weather: ${weatherInfo}]`;
+                } else if (searchKeywords.some(k => lowerMsg.includes(k))) {
+                    const snippetData = await searchWeb(message);
+                    if (snippetData) liveContext += `\n[Live Search Context: ${snippetData}]`;
                 }
 
-                const fullUserContent = `${message}${searchContext}`;
+                if (calendarKeywords.some(k => lowerMsg.includes(k))) {
+                    const scheduleInfo = await getTodaySchedule();
+                    liveContext += `\n[Calendar Context: ${scheduleInfo}]`;
+                }
+
+                if (emailKeywords.some(k => lowerMsg.includes(k))) {
+                    const emailInfo = await getRecentUnreadEmails();
+                    liveContext += `\n[Gmail Context: ${emailInfo}]`;
+                }
+
+                const fullUserContent = `${message}${liveContext}`;
                 if (history.length > 0 && history[history.length - 1].role === 'user') {
                     history[history.length - 1].content = fullUserContent;
                 }
 
                 const completion = await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+                    model: 'qwen-3.6-27b',
                     messages: [
                         {
                             role: 'system',
@@ -249,7 +347,8 @@ app.post('/api/chat', async (req, res) => {
                             - Always address the user as "Sir" or "Boss".
                             - Infuse your responses with dry British wit, subtle sarcasm, and zero corporate fluff.
                             - Keep sentences short and concise (1-2 sentences max).
-                            - Avoid all generic AI filler phrases.`
+                            - Avoid all generic AI filler phrases.
+                            - If given [Live Search Context], [Live Weather], [Calendar Context], or [Gmail Context] in the user's message, use that real data to answer — don't say you can't access it.`
                         },
                         ...history
                     ],
